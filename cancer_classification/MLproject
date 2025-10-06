@@ -1,0 +1,17 @@
+name: Cancer_Classification
+
+entry_points:
+  data-preprocessing:
+    parameters:
+      test-size: {type: float, default: 0.3}
+    command: "/usr/bin/python3.13 data_preprocessing.py --test-size {test-size}"
+  hyperparameters-tuning:
+    parameters:
+      n-trials: {type: int, default: 10}
+    command: "/usr/bin/python3.13 hyperparameters_tuning.py --n-trials {n-trials}"
+  model-training:
+    command: "/usr/bin/python3.13 model_training.py"
+  data-evaluation:
+    parameters:
+      eval-dataset: {type: str}
+    command: "/usr/bin/python3.13 data_evaluation.py --eval-dataset {eval-dataset}"

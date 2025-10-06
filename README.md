@@ -6,7 +6,7 @@
 
 
 ## Первая часть
-В рамках инструкции будут пройдены все основные шаги пайплайна разработки модели в `MLflow` на простом примере с XGBoost моделью на основе open-source датасета из области медицины. 
+В рамках инструкции будут пройдены все основные шаги пайплайна разработки модели в `MLflow` на простом примере с XGBoost моделью на основе open-source датасета из области медицины (классификация онкологии по табличным данным). 
 Можно склонировать этот репозиторий и пройти все шаги на своей локальной машине либо просто просмотреть данный README файл.
 
 ### Установка и запуск
@@ -423,7 +423,7 @@ mlflow run . --entry-point model-training --env-manager local --experiment-name 
 ![](img/model_metrics.png)
 
 
-После сохранения модели, мы можем получить доступ к странице артефактов внутри запуска. В артефактах можно хранить любые типы файлов, такие как пользовательские графики, текстовые файлы, изображения, наборы данных или скрипты Python.
+После сохранения модели, мы можем получить доступ к странице артефактов внутри запуска. В артефактах можно хранить любые типы файлов, такие как пользовательские графики, текстовые файлы, изображения, наборы данных или скрипты Python. Для того чтобы добавить в артефакты pytorch модель нужно использовать mlflow.pytorch.log_model().
 
 Для каждой модели MLflow автоматически создаёт YAML конфигурационный файл, называемый MLmodel. Этот файл можно просмотреть в интерфейсе MLflow или скачать и изучить.
 
@@ -432,18 +432,15 @@ artifact_path: model
 flavors:
   python_function:
     data: model.xgb
-    env:
-      conda: conda.yaml
-      virtualenv: python_env.yaml
     loader_module: mlflow.xgboost
-    python_version: 3.11.4
+    python_version: 3.13.5
   xgboost:
     code: null
     data: model.xgb
     model_class: xgboost.sklearn.XGBClassifier
     model_format: xgb
     xgb_version: 2.0.3
-mlflow_version: 2.14.2
+mlflow_version: 3.4.0
 model_size_bytes: 35040
 model_uuid: 516954aae7c94e91adeed9df76cb4052
 run_id: bf212703d1874eee9dcb37c8a92a6de6
@@ -479,7 +476,7 @@ signature:
     {"type": "double", "name": "additional_feature", "required": true}]'
   outputs: '[{"type": "long", "required": true}]'
   params: null
-utc_time_created: '2024-07-30 08:38:11.745511'
+utc_time_created: '2022-06-30 11:38:11.745511'
 
 ```
 
@@ -539,10 +536,13 @@ mlflow run . --entry-point data-evaluation --env-manager local --experiment-name
 
 ### Деплой модели
 
-MLflow имеет встроенные возможности для деплоя моделей. Деплой модели с использованием Flask довольно просто сделать: mlflow models serve -m models:/CancerModel/1 --env-manager local.
+MLflow имеет встроенные возможности для деплоя моделей. Деплой можно разделить на 2 вида: mlflow models для локального запуска и mlflow deployments для запуска другими способами (kubernetes, databricks). 
+Деплой модели с использованием Flask: 
+mlflow models serve -m models:/CancerModel/1 --env-manager local -p 5001
+Отправка реквеста на сервер:
+curl http://127.0.0.1:5001/invocations -H "Content-Type:application/json"  --data '{"inputs": [[1, 2], [3, 4], [5, 6]]}'
 
-Пакет mlserver облегчает эффективное развертывание и обслуживание моделей машинного обучения с поддержкой множества фреймворков, используя интерфейсы REST и gRPC. 
-Потребуется установить следующие пакеты: mlserver, mlserver-mlflow, mlserver-xgboost, если используется собственное окружение. После этого нужно настроить конфигурационный файл (model-settings.json) для MLServer. Это позволяет нам изменить работу API; здесь мы просто настраиваем алиас для модели:
+Также можно настроить деплой с помощью пакета mlserver. Он облегчает развертывание моделей машинного обучения с поддержкой множества фреймворков, используя интерфейсы REST и gRPC. Потребуется установить следующие пакеты: mlserver, mlserver-mlflow если используется собственное окружение. После этого нужно настроить конфигурационный файл (model-settings.json) для MLServer.
 
 ```json
 {

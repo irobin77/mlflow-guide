@@ -72,7 +72,7 @@ if __name__ == '__main__':
         # Log model as Booster
         input_example = test.loc[0:10, features]
         predictions_example = pd.DataFrame(model.predict(xgb.DMatrix(input_example)), columns=['predictions'])
-        da = mlflow.xgboost.log_model(xgb_model=model, name="booster", input_example=input_example)
+        mlflow.xgboost.log_model(xgb_model=model, name="booster", input_example=input_example)
         mlflow.log_text(predictions_example.to_json(orient='split', index=False), 'booster/predictions_example.json')
 
         # Register model
@@ -84,7 +84,6 @@ if __name__ == '__main__':
         model = xgb.XGBClassifier(**params)
         model.fit(train.loc[:, features], train['target'])
         mlflow.xgboost.log_model(xgb_model=model, name="model", input_example=input_example)
-        # mlflow.log_model
 
         # log datasets
         mlflow.log_text(train.to_csv(index=False), 'datasets/train.csv')

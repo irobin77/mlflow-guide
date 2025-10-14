@@ -576,3 +576,282 @@ mlserver start .
 ### TODO
 Развертывание сервера
 По умолчанию все запуски хранятся локально в файловой системе. Для работы в команде это не подходит, нужно развернуть отдельный сервер.
+
+
+
+## Вторая часть
+
+В обновлении MLflow 3.0 был добавлен модуль GenAI Apps & Agents, который позволяет разрабатывать, оценивать, развертывать и отслеживать работу GenAI моделей.
+Основные возможности:
+ 1. Tracing (улучшает прозрачность, фиксируя входные данные, выходные результаты и метаданные, связанные с каждым промежуточным шагом);
+ 2. Evaluation (оценка качества работы модели);
+ 3. Prompt Registry (регистрация промптов, их оптимизация);
+
+
+### Tracing
+Для работы данного функционала необходимо подключение backend storage в виде базы данных. Локально самое простое сделать так:
+mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+MLflow Tracing интегрирован с различными библиотеками GenAI и обеспечивает автоматическое отслеживание в один клик для таких библиотек как OpenAI, LangChain, Claude, Deepseek и т.д. 
+Пример автологирования для LangChain:
+
+```python
+import mlflow
+
+from langchain.prompts import PromptTemplate
+from langchain_huggingface.llms import HuggingFacePipeline
+
+
+# Создание объекта модели на базе Hugging Face
+hf = HuggingFacePipeline.from_model_id(
+    model_id="gpt2",
+    task="text-generation",
+    pipeline_kwargs={"max_new_tokens": 15},
+)
+
+# Включение автологирования
+mlflow.langchain.autolog()
+
+mlflow.set_tracking_uri("http://localhost:5000")
+mlflow.set_experiment("LangChain")
+
+prompt_template = PromptTemplate.from_template(
+    """Question: {question}"""
+)
+
+chain = prompt_template | hf
+
+print(chain.invoke(
+    {
+        "question": "Hello! How are you?"
+    }
+))
+```
+
+В интерфейсе в разделе Traces появится строка, в ней можно посмотреть вход и выход, аттрибуты модели и скорость выполнения каждого шага.
+![](img/tracing1.png)
+
+Также можно добавлять пользовательские traces с помощью декоратора mlflow.trace(). При использовании его с другими декораторами, для правильной работы он должен быть внешним. Декоратор принимает следующие аргументы для настройки создаваемого спана:
+name — параметр для переопределения имени спана, по умолчанию это имя декорируемой функции;
+span_type — параметр для задания типа спана (например: 'func', 'retriever', 'reranker' и тд). Можно установить один из встроенных типов спанов или строку;
+attributes — параметр для добавления пользовательских атрибутов к спану;
+
+Также traces могут быть использованы для того чтобы отслеживать сколько токенов было использовано для обработки запроса и генерации ответа, отслеживать запросы конкретных пользователей или сессий, версии приложений и окружение. Можно транслировать запросы с прода в traces и отсматривать их на предмет ошибок.
+
+С помощью MLflow Feedback API можно проставлять пользовательские оценки каждому запросу. Фидбэк может быть бинарным (ок/не ок), числовым (1-5) или текстовым.
+![](img/tracing2.png)
+
+
+### Evaluation
+Mlflow.genai предлагает подход для построения последовательного процесса оценки качества GenAI моделей. Он стандартизирует взаимодействие между датасетами, моделями, ментриками и предоставляет фреймворк для отслеживания и сравнения результатов.
+Модуль основывается на трех основных концепциях:
+Функция предсказания (prediction function) - отвечает за генерацию результатов на основе заданных входных данных;
+Функция оценки (scorer) - определяет критерий качества ответа. Может отвечать на вопрос насколько правильны или корректны с точки зрения формата выходные данные модели;
+Тестовый датасет (evaluation dataset) - состоит из входных данных (обязательно), и ожидаемого результата (опционально);
+
+Пример простого пайплайна для оценки работы модели:
+```python
+import mlflow
+import os
+
+from mlflow.genai import scorer
+from mlflow.genai.scorers import Correctness, Guidelines
+
+from transformers import pipeline
+
+
+os.environ["MISTRAL_API_KEY"] = ""
+
+mlflow.set_tracking_uri("http://localhost:5000")
+mlflow.set_experiment("test_evaluation")
+
+# Создание объекта модели
+pipe = pipeline("text-generation", model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+
+# Функция предсказания
+def qa_predict_fn(question: str) -> str:
+    messages = [{"role": "user", "content": question}]
+    prompt = pipe.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    outputs = pipe(prompt, max_new_tokens=20)
+    response = outputs[0]["generated_text"]
+
+    return response
+
+
+# Простой Q&A датасет с вопросами и ожидаемыми ответами
+evaluation_dataset = [
+    {
+        "inputs": {"question": "What is the capital of France?"},
+        "expectations": {"expected_response": "Paris"},
+    },
+    {
+        "inputs": {"question": "Who was the first person to build an airplane?"},
+        "expectations": {"expected_response": "Wright Brothers"},
+    },
+    {
+        "inputs": {"question": "Who wrote Romeo and Juliet?"},
+        "expectations": {"expected_response": "William Shakespeare"},
+    },
+]
+
+
+# Определение функций оценки
+@scorer
+def is_concise(outputs: str) -> bool:
+    """Evaluate if the answer is concise (less than 30 words)"""
+    return len(outputs.split()) <= 30
+
+
+scorers = [
+    Correctness(model="mistral:/mistral-tiny"),
+    Guidelines(name="is_english", guidelines="The answer must be in English", model="mistral:/mistral-tiny"),
+    is_concise,
+]
+
+# Запуск
+results = mlflow.genai.evaluate(
+    data=evaluation_dataset,
+    predict_fn=qa_predict_fn,
+    scorers=scorers,
+)
+
+```
+
+![](img/evaluation.png)
+
+В MLflow есть встроенные функции оценки такие как Correctness или Guidelines, которые используют сторонние LLM для оценки правильности ответа. Но также можно добавлять функции оценки самому (через декоратора @scorer()), например для отслеживания корректности формата выходного сообщения или для контроля количества токенов.
+
+
+### Prompt registry
+MLflow Prompt Registry позволяет отслеживать, версионировать и переиспользовать промпты внутри команды разработки.
+Зарегистрировать промпт в реестре MLflow можно двумя основными способами: через интерфейс MLflow или с помощью Python.
+В интерфейсе через New->Prompt нужно ввести название, контент и сообщение коммита для нового промпта.
+![](img/prompt_registry.png)
+
+Изменяя данный промпт можно получать новые версии и сравнивать их в интерфейсе:
+![](img/prompt_registry2.png)
+
+Регистрация промптов через python:
+```python
+initial_template = """
+Summarize content you are provided with in {{ num_sentences }} sentences
+"""
+# Register a new prompt
+prompt = mlflow.genai.register_prompt(
+    name="summarization-prompt",
+    template=initial_template,
+    # Optional: Provide a commit message to describe the changes
+    commit_message="Initial commit",
+    # Optional: Set tags applies to the prompt (across versions)
+    tags={
+        "author": "author@example.com",
+        "task": "summarization",
+        "language": "en",
+    },
+)
+```
+
+После этого его можно подгрузить из реестра с помощью mlflow.genai.load_prompt("prompts:/test_prompt/2")
+Для того, чтобы оптимизировать промпт нужно несколько составляющих: зарегистрированный промпт, функция оценки, train и val датасет, llm модель и настройки оптимизации (OptimizerConfig).
+Пример оптимизации промпта отвечающего на вопросы:
+
+```python
+import os
+from typing import Any
+import mlflow
+from mlflow.genai.scorers import scorer
+from mlflow.genai.optimize import OptimizerConfig, LLMParams
+
+
+# os.environ["MISTRAL_API_KEY"] = ""
+mlflow.set_tracking_uri("http://localhost:5000")
+
+
+# Define a custom scorer function to evaluate prompt performance with the @scorer decorator.
+# The scorer function for optimization can take inputs, outputs, and expectations arguments, but not the trace argument.
+# Note that the DSPy/MIPROv2 optimizer requires metrics to receive outputs as a dict.
+@scorer
+def exact_match(expectations: dict[str, Any], outputs: dict[str, Any]) -> bool:
+    return expectations["answer"] == outputs["answer"]
+
+
+# Register the initial prompt
+initial_template = """
+Answer to this math question: {{question}}.
+Return the result in a JSON string in the format of {"answer": "xxx"}.
+"""
+
+prompt = mlflow.genai.register_prompt(
+    name="math",
+    template=initial_template
+)
+
+# The data can be a list of dictionaries, a pandas DataFrame, or an mlflow.genai.EvaluationDataset
+# It needs to contain inputs and expectations where each row is a dictionary.
+train_data = [
+    {
+        "inputs": {"question": "Given that $y=3$, evaluate $(1+y)^y$."},
+        "expectations": {"answer": "64"},
+    },
+    {
+        "inputs": {
+            "question": "The midpoint of the line segment between $(x,y)$ and $(-9,1)$ is $(3,-5)$. Find $(x,y)$."
+        },
+        "expectations": {"answer": "(15,-11)"},
+    },
+    {
+        "inputs": {
+            "question": "What is the value of $b$ if $5^b + 5^b + 5^b + 5^b + 5^b = 625^{(b-1)}$? Express your answer as a common fraction."
+        },
+        "expectations": {"answer": "\\frac{5}{3}"},
+    },
+    {
+        "inputs": {"question": "Evaluate the expression $a^3\\cdot a^2$ if $a= 5$."},
+        "expectations": {"answer": "3125"},
+    },
+    {
+        "inputs": {"question": "Evaluate $\\lceil 8.8 \\rceil+\\lceil -8.8 \\rceil$."},
+        "expectations": {"answer": "17"},
+    },
+]
+
+eval_data = [
+    {
+        "inputs": {
+            "question": "The sum of 27 consecutive positive integers is $3^7$. What is their median?"
+        },
+        "expectations": {"answer": "81"},
+    },
+    {
+        "inputs": {"question": "What is the value of $x$ if $x^2 - 10x + 25 = 0$?"},
+        "expectations": {"answer": "5"},
+    },
+    {
+        "inputs": {
+            "question": "If $a\\ast b = 2a+5b-ab$, what is the value of $3\\ast10$?"
+        },
+        "expectations": {"answer": "26"},
+    },
+    {
+        "inputs": {
+            "question": "Given that $-4$ is a solution to $x^2 + bx -36 = 0$, what is the value of $b$?"
+        },
+        "expectations": {"answer": "-5"},
+    },
+]
+
+# Optimize the prompt
+result = mlflow.genai.optimize_prompt(
+    target_llm_params=LLMParams(model_name="mistral:/mistral-tiny"),
+    prompt=prompt,
+    train_data=train_data,
+    eval_data=eval_data,
+    scorers=[exact_match],
+    optimizer_config=OptimizerConfig(
+        num_instruction_candidates=8,
+        max_few_show_examples=2,
+    ),
+)
+```
+В интерфейсе можно посмотреть на оптимизированную версию промпта:
+![](img/prompt_registry3.png)

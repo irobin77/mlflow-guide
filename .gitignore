@@ -1,4 +1,8 @@
 cancer_classification/mlruns
+cancer_classification/mlartifacts
+genai/mlruns
+genai/mlartifacts
+genai/mlflow.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
